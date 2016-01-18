@@ -60,36 +60,39 @@ class DirScan(object):
                 sys.exit(-2)
 
 
-    def _scan(self):
+    def _scan(self, thread_name):
         while True:
             if self._queue.empty():
                 break
             try:
                 sub = self._queue.get_nowait()
-                target = self._target + sub.strip()
+                target = self._target + sub.strip('\n')
                 self._lock.acquire()
-                r = requests.get(target, headers=USER_AGENT, timeout=5)
+                r = requests.head(target, headers=USER_AGENT, timeout=5, stream=True)
                 code = r.status_code
                 if code == 200:
                     print('[+][CODE 200] %s' % (target,))
                 if code == 403:
                     print('[+][CODE 403] %s' % (target,))
-                if code == 304:
-                    print('[+][CODE 304] %s' % (target,))
-                self._lock.release()
+                if code == 302:
+                    print('[+][CODE 302] %s' % (target,))
+                time.sleep(0)
             except Exception as e:
-                print(str(e))
+                print('Thread...'+str(e)+sub)
+                time.sleep(0.01)
             finally:
-                pass
+                self._lock.release()
 
     def run(self):
         for i in range(self._thread_num):
-            t = threading.Thread(target=self._scan, name=str(i))
+            t = threading.Thread(target=self._scan, args=(str(i),),name=str(i))
             self._thread_list.append(t)
             t.start()
 
         for t in self._thread_list:
             t.join()
+
+        print('Finished.')
 
 
 if __name__ == '__main__':
