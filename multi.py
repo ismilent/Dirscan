@@ -34,12 +34,13 @@ is_exit = False
 def signal_handler(signum, frame):
     global is_exit
     is_exit = True
+    sys.exit()
 
 
 def print_line(line):
     sys.stdout.write('\r' + line.strip())
     sys.stdout.flush()
-    time.sleep(0.05)
+    # time.sleep(0.05)
     sys.stdout.write('\r' + ' ' * len(line))
     sys.stdout.flush()
 
@@ -104,7 +105,7 @@ class DirScan(object):
     _manager = Manager()
     _queue = _manager.Queue()
 
-    def __init__(self, target=None, process_num=10, thread_num=20, ext=None, wordlist=None, recursion=2,
+    def __init__(self, target=None, process_num=10, thread_num=10, ext=None, wordlist=None, recursion=2,
                  timeout=5,
                  target_file=None):
         if target:
@@ -141,7 +142,7 @@ class DirScan(object):
     def run(self):
         for target in self._target:
             queue = copy.copy(self._queue)
-            print 'qsize: %d' % queue.qsize()
+            # print 'qsize: %d' % queue.qsize()
             try:
                 requests.get(target, timeout=3)
                 for i in range(self._process_num):
@@ -159,7 +160,7 @@ class DirScan(object):
                 print str(e)
                 print('[-] failed to connect %s' % target)
 
-        print('\rFinished.')
+        print('\r[+]Finished.')
 
 
 if __name__ == '__main__':
@@ -168,7 +169,7 @@ if __name__ == '__main__':
     opt_parser.add_option('-f', '--file', dest='target_file',
                           default=None, type='string', help='the target file')
     opt_parser.add_option('-t', '--threads', dest='thread_num',
-                          default=20, type='int',
+                          default=10, type='int',
                           help='the thread number of program')
     opt_parser.add_option('-e', '--ext', dest='ext',
                           default=None, type='string',
