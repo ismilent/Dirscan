@@ -33,6 +33,16 @@ def signal_handler(signum, frame):
     sys.exit()
 
 
+# patch url
+def patch_url(url):
+    res = urlparse.urlparse(url)
+    if not res.scheme:
+        url = 'http://' + url.strip()
+    if res.path[-1] != '/':
+        url += '/'
+    return url
+
+
 class DirScan(object):
     """
     Class DirScan
@@ -43,9 +53,13 @@ class DirScan(object):
     _thread_list = []  # 线程队列
     _lock = threading.Lock()  # 线程锁
     _custom_headers = USER_AGENT  # 自定义
+    _target = []  # 目标地址
 
-    def __init__(self, target, thread_num=20, ext=None, wordlist=None, recursion=2, timeout=5):
-        self._target = self._patch_url(target)
+    def __init__(self, target=None, thread_num=20, ext=None, wordlist=None, recursion=2, timeout=5, target_file=None):
+        if target:
+            self._target.append(patch_url(target))
+        if target_file:
+            self._target.extend(self._load_target_file(target_file))
         self._thread_num = thread_num
         if ext:
             self._ext = ext
@@ -55,31 +69,22 @@ class DirScan(object):
         self._recursion = recursion  # 循环深度
         self._timeout = timeout  # 超时
         self._load_dir_dict()
-
-    #  patch url
-    def _patch_url(self, url):
-        res = urlparse.urlparse(url)
-        if not res.scheme:
-            url = 'http://' + url
-        res = urlparse.urlparse(url)
-        if not res.path:
-            url += '/'
-        return url
+        print(self._target)
 
     def _load_dir_dict(self):
         for word_file_path in self._word_list:
             try:
                 with open(word_file_path, 'r') as f:
-                    for line in f:
-                        self._queue.put(line)
+                    [self._queue.put(line) for line in f if line]
             except Exception as e:
                 print(str(e))
                 sys.exit(-2)
 
-    def _build_backup_path(self):
-        pass
+    def _load_target_file(self, target_file):
+        with open(target_file, 'r') as f:
+            return [patch_url(target) for target in f]
 
-    def _scan(self, domain, thread_name):
+    def _scan(self, domain):
         global is_exit
         while not is_exit:
             if self._queue.empty():
@@ -94,39 +99,51 @@ class DirScan(object):
                     print('[+][CODE %d] %s' % (code, target))
             except Exception as e:
                 print('Thread...' + str(e) + sub)
-                time.sleep(0.01)
             finally:
-                time.sleep(0.01)
+                time.sleep(0)
                 self._lock.release()
 
     def run(self):
-        for i in range(self._thread_num):
-            t = threading.Thread(target=self._scan, args=(self._target, str(i)), name=str(i))
-            self._thread_list.append(t)
-            t.start()
-
-        for t in self._thread_list:
-            t.join()
+        for target in self._target:
+            for i in range(self._thread_num):
+                try:
+                    requests.get(target)
+                    t = threading.Thread(target=self._scan, args=(target,), name=str(i))
+                    self._thread_list.append(t)
+                    t.start()
+                except Exception as e:
+                    print('[-] failed to connect %s' % target)
+                    # print(str(e))
+            for t in self._thread_list:
+                t.join()
 
         print('Finished.')
 
 
 if __name__ == '__main__':
     signal.signal(signal.SIGINT, signal_handler)
-    opt_parser = optparse.OptionParser('Usage: ')
+    opt_parser = optparse.OptionParser('Usage: %prog [options] http://url/')
+    opt_parser.add_option('-f', '--file', dest='target_file',
+                          default=None, type='string', help='the target file')
     opt_parser.add_option('-t', '--threads', dest='thread_num',
-                          default=5, type='int',
-                          help='The thread number of program')
+                          default=20, type='int',
+                          help='the thread number of program')
     opt_parser.add_option('-e', '--ext', dest='ext',
                           default=None, type='string',
-                          help='The web script extension')
+                          help='the web script extension')
     opt_parser.add_option('-w', '--wordlist', dest='wordlist', type='string',
-                          help='The word list path')
+                          default='common.txt', help='the word list path')
+    opt_parser.add_option('-r', '--recursive', dest='recursive',
+                          default=2, type='int', help='the deep of scan')
 
     (options, args) = opt_parser.parse_args()
-    if len(args) < 1 or not options.wordlist:
-        opt_parser.print_help()
-        sys.exit(EXIT_CODE_ARG)
+    if options.target_file:
+        target = None
+    else:
+        if len(args) < 1:
+            opt_parser.print_help()
+            sys.exit(EXIT_CODE_ARG)
+        target = args[0]
 
     # 获取文件列表
     word_list = options.wordlist.split(',')
@@ -134,6 +151,10 @@ if __name__ == '__main__':
     if len(word_list) < 1:
         opt_parser.print_help()
         sys.exit(EXIT_CODE_ARG)
-
-    d = DirScan(target=args[0], thread_num=options.thread_num, ext=options.ext, wordlist=word_list)
+    if target:
+        d = DirScan(target=target, thread_num=options.thread_num, ext=options.ext, wordlist=word_list,
+                    target_file=options.target_file)
+    else:
+        d = d = DirScan(thread_num=options.thread_num, ext=options.ext, wordlist=word_list,
+                        target_file=options.target_file)
     d.run()
