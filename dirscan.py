@@ -7,6 +7,10 @@ import requests
 import threading
 import time
 import signal
+import copy
+from multiprocessing import cpu_count
+from multiprocessing import Manager
+import multiprocessing
 
 try:
     import queue as Queue
@@ -19,7 +23,7 @@ except Exception as e:
     import urlparse
 
 EXIT_CODE_ARG = -1
-USER_AGENT = {
+USER_HEADERS = {
     'user-agent': 'Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/45.0.2454.85 Safari/537.36'}
 
 global is_exit
@@ -33,14 +37,58 @@ def signal_handler(signum, frame):
     sys.exit()
 
 
+def print_line(line):
+    sys.stdout.write('\r' + line.strip())
+    sys.stdout.flush()
+    # time.sleep(0.05)
+    sys.stdout.write('\r' + ' ' * len(line))
+    sys.stdout.flush()
+
+
 # patch url
 def patch_url(url):
-    res = urlparse.urlparse(url)
+    res = urlparse.urlparse(url.strip())
     if not res.scheme:
         url = 'http://' + url.strip()
-    if res.path[-1] != '/':
-        url += '/'
     return url
+
+
+MAX_PROCESS_NUM = cpu_count()
+
+
+# 线程函数
+def scan(domain, queue, timeout, headers, lock):
+    global is_exit
+    while not is_exit:
+        if queue.empty():
+            break
+        try:
+            lock.acquire()
+            sub = queue.get_nowait()
+            target = domain + sub.strip('\n')
+            r = requests.get(target, headers=headers, timeout=timeout, stream=True)
+            code = r.status_code
+            # print_line('[x][Scan URL:] %s' % (target,))
+            if code != 404:
+                print('\r[+][CODE %d] %s' % (code, target.strip()))
+        except Exception as e:
+            pass
+            # print('Thread...' + str(e) + sub)
+        finally:
+            lock.release()
+            time.sleep(0)
+
+
+# 进程函数
+def Worker(target, queue, thread_num, timeout, headers):
+    thread_list = []
+    lock = threading.Lock()
+    for i in range(thread_num):
+        t = threading.Thread(target=scan, args=(target, queue, timeout, headers, lock))
+        thread_list.append(t)
+        t.start()
+    for t in thread_list:
+        t.join()
 
 
 class DirScan(object):
@@ -48,14 +96,18 @@ class DirScan(object):
     Class DirScan
     """
     _ext = None  # 扩展名
-    _queue = Queue.Queue()
     _word_list = []  # 字典
-    _thread_list = []  # 线程队列
+    _process_list = []  # 线程队列
     _lock = threading.Lock()  # 线程锁
-    _custom_headers = USER_AGENT  # 自定义
+    _custom_headers = USER_HEADERS  # 自定义
     _target = []  # 目标地址
+    _process_count = 0
+    _manager = Manager()
+    _queue = _manager.Queue()
 
-    def __init__(self, target=None, thread_num=20, ext=None, wordlist=None, recursion=2, timeout=5, target_file=None):
+    def __init__(self, target=None, process_num=10, thread_num=10, ext=None, wordlist=None, recursion=2,
+                 timeout=5,
+                 target_file=None):
         if target:
             self._target.append(patch_url(target))
         if target_file:
@@ -66,10 +118,11 @@ class DirScan(object):
         if wordlist:
             self._word_list = word_list
 
+        self._process_num = process_num  # 进程数量
         self._recursion = recursion  # 循环深度
         self._timeout = timeout  # 超时
+        self._pool = multiprocessing.Pool(processes=MAX_PROCESS_NUM)
         self._load_dir_dict()
-        print(self._target)
 
     def _load_dir_dict(self):
         for word_file_path in self._word_list:
@@ -84,40 +137,30 @@ class DirScan(object):
         with open(target_file, 'r') as f:
             return [patch_url(target) for target in f]
 
-    def _scan(self, domain):
-        global is_exit
-        while not is_exit:
-            if self._queue.empty():
-                break
-            try:
-                sub = self._queue.get_nowait()
-                target = domain + sub.strip('\n')
-                self._lock.acquire()
-                r = requests.get(target, headers=self._custom_headers, timeout=self._timeout, stream=True)
-                code = r.status_code
-                if code != 404:
-                    print('[+][CODE %d] %s' % (code, target))
-            except Exception as e:
-                print('Thread...' + str(e) + sub)
-            finally:
-                time.sleep(0)
-                self._lock.release()
+            # def _Worker(self, target, queue, thread_num):
 
     def run(self):
         for target in self._target:
-            for i in range(self._thread_num):
-                try:
-                    requests.get(target)
-                    t = threading.Thread(target=self._scan, args=(target,), name=str(i))
-                    self._thread_list.append(t)
-                    t.start()
-                except Exception as e:
-                    print('[-] failed to connect %s' % target)
-                    # print(str(e))
-            for t in self._thread_list:
-                t.join()
+            queue = copy.copy(self._queue)
+            # print 'qsize: %d' % queue.qsize()
+            try:
+                requests.get(target, timeout=3)
+                for i in range(self._process_num):
+                    if self._process_count < self._process_num:
+                        # target, queue, thread_num, timeout, headers
+                        result = self._pool.apply_async(Worker, (
+                            target, queue, self._thread_num, self._timeout, self._custom_headers))
+                        self._process_count += 1
+                self._pool.close()
+                self._pool.join()
+                if result.successful():
+                    print 'successful'
+                self._process_count = 0
+            except Exception as e:
+                print str(e)
+                print('[-] failed to connect %s' % target)
 
-        print('Finished.')
+        print('\r[+]Finished.')
 
 
 if __name__ == '__main__':
@@ -126,7 +169,7 @@ if __name__ == '__main__':
     opt_parser.add_option('-f', '--file', dest='target_file',
                           default=None, type='string', help='the target file')
     opt_parser.add_option('-t', '--threads', dest='thread_num',
-                          default=20, type='int',
+                          default=10, type='int',
                           help='the thread number of program')
     opt_parser.add_option('-e', '--ext', dest='ext',
                           default=None, type='string',
